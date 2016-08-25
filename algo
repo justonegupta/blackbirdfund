@@ -1,0 +1,126 @@
+import numpy as np
+import scipy
+
+
+def initialize(context):
+    schedule_function(func= getin,date_rule=date_rules.week_start(days_offset=0),
+                      time_rule=time_rules.market_open(hours=1, minutes=1))
+    schedule_function(func= getin,date_rule=date_rules.week_start(days_offset=3),
+                      time_rule=time_rules.market_open(hours=1, minutes=1))
+    
+    
+    context.stocks = [ sid(42039), #SPY  
+                       sid(38842),#TLT 
+                     sid(26981) #GLD
+                      ]  
+                  
+    context.x0 = 1.0*np.ones_like(context.stocks)/len(context.stocks)
+    
+def handle_data(context, data):  
+    if 'mx_lvrg' not in context:             # Max leverage  
+        context.mx_lvrg = 0                  # Init this instead in initialize() for better efficiency  
+    if context.account.leverage > context.mx_lvrg:  
+        context.mx_lvrg = context.account.leverage  
+        record(mx_lvrg = context.mx_lvrg)    # Record maximum leverage encountered      
+    record(leverage=context.account.leverage)
+
+    
+def getin(context, data):
+     
+    prices = data.history(context.stocks,'price',22,'1d').as_matrix(context.stocks) #22 = 1 month
+    ret = np.diff(prices,axis=0) # daily returns
+    ret = np.divide(ret,np.amax(np.absolute(ret)))
+    
+    bnds = ((0,1),(0,1),(0,1)) #bounds for weights (number of bounds  = to number of assets)
+    cons = ({'type': 'eq', 'fun': lambda x:  np.sum(x)-1.0})
+    
+    res= scipy.optimize.minimize(fitnessERC, context.x0, args=ret,method='SLSQP',constraints=cons,bounds=bnds)
+    
+    if res.success:
+        allocation = res.x
+        allocation[allocation<0]=0
+        denom = np.sum(allocation)
+        if denom != 0:         #normalization process
+            allocation = allocation/denom
+    else:
+        allocation = context.x0
+ 
+    context.x0 = allocation
+    
+    total=allocation[0]+allocation[1]+allocation[2]
+    w1=allocation[0]/total
+    w2=allocation[1]/total
+    w3=allocation[2]/total
+    
+    
+    #########################################################
+    current_spy = data.current(sid(42039), 'price')
+    current_tlt = data.current(sid(38842), 'price')
+    current_gld = data.current(sid(26981), 'price')
+    
+    
+    spy_hist = data.history(sid(42039),'close',10,'1d')
+    tlt_hist = data.history(sid(38842),'close',10,'1d')
+    gld_hist = data.history(sid(26981),'close',10,'1d')
+    
+    
+    spy_change = (spy_hist.ix[-5] - current_spy) / current_spy
+    tlt_change = (tlt_hist.ix[-5] - current_tlt) / current_tlt
+    gld_change = (gld_hist.ix[-5] - current_gld) / current_gld
+    
+    
+    risk=.03
+    reward=.05
+    
+    if spy_change <- risk*(1-w1) or spy_change > reward*(1-w1):
+        l = .5
+    else:
+        l = 1
+    
+    if tlt_change <- risk*(1-w2) or  tlt_change > reward*(1-w2):
+        m = .5
+    else:
+        m = 1
+
+    if gld_change <- risk*(1-w3) or  gld_change > reward*(1-w3):
+        n = .5
+    else:
+        n = 1
+
+    #################
+    
+    
+    
+    leverage = 1
+    
+    order_target_percent(sid(42039),w1*leverage*l)
+    order_target_percent(sid(38842),w2*leverage*m)
+    order_target_percent(sid(26981),w3*leverage*n)
+
+    
+
+
+
+def variance(x,*args):
+    p = np.squeeze(np.asarray(args))
+    Acov = np.cov(p.T)
+    return np.dot(x,np.dot(Acov,x))
+
+def fitnessERC(x, *args):
+    N = x.shape[0]
+    p = np.squeeze(np.asarray(args))
+    Acov = np.cov(p.T)
+    Acov = np.matrix(Acov)
+    x = np.matrix(x)
+    y = np.array(x) * ( np.array( Acov * x.T ).T )
+    var = x * Acov * x.T
+    b = var/N
+    fval = 0 
+    y = np.squeeze(np.asarray(y))
+    for i in range(0,N):
+        xij  = (y[i]/var - b) * (y[i]/var - b)
+        fval = fval + xij*xij
+    return fval
+
+
+          
